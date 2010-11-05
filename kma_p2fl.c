@@ -54,9 +54,70 @@
  *  structures and arrays, line everything up in neat columns.
  */
 
+/* single word = 4, double word = 8 alignment */
+#define ALIGNMENT 4
+
+// rounding function for a multiple of alignment
+#define ALIGNUP(size) (((size) + (ALIGNMENT - 1) & ~0x7)
+
+#define SIZE_T_SIZE (ALIGNUP(sizeof(size_t)))
+
+/* header and footer field size */
+#define HEADSIZE SIZE_T_SIZE
+#define FOOTSIZE SIZE_T_SIZE
+
+// block size = f(ptr->header)
+#define SIZE(ptr) (*(size_t *)ptr)
+#define USIZE(ptr) (SIZE(ptr) & ~0x1) // masksfree bit
+
+#define FREE_TEST(ptr) (SIZE(ptr) & 0x1) // tests whether the block is free
+
+#define INC_PTR(ptr, n) ((void *) ((char *) ptr + n))
+
+// footer = f(header)
+#define FOOT(ptr) INC_PTR(ptr, (HEADSIZE + USIZE(ptr)))
+
+// reading a free list's link
+#define HEADLINK(ptr) ((void *)SIZE(INC_PTR(ptr, 4)))
+#define FOOTLINK(ptr) ((void *)SIZE(INC_PTR(FOOT(ptr),4)))
+
+// writing a free list's link
+#define SET_HEADLINK(ptr1, ptr2) (SIZE(INC_PTR(ptr1,4)) = (size_t)ptr2)
+#define SET_FOOTLINK(ptr1,ptr2) (SIZE(INC_PTR(FOOT(ptr1),4)) = (size_t)ptr2)
+
+#define MINPOWER 4 // gives 16 as the size of the smallest buffer
+#define MAXBUFSIZE 4096 // assuming that a page is 4 kilobytes...
+#define PGSIZE 4096
+
+#define BUFNO 6
+
+#define PGROUNDUP(sz) (((sz)+PGSIZE-1) & ~(PGSIZE-1))
+
+//#define MAXPAGESIZE 4096
+
+typedef struct fl {
+	kma_size_t sz;
+	struct fl* next;
+} freelist;
+
+/*
+struct fl {
+	size_t sz;
+	fl *next;
+};
+*/
+
 /************Global Variables*********************************************/
 
+freelist freelistlist[BUFNO];
+//typedef union fl freelist;
+static int init;
+
 /************Function Prototypes******************************************/
+
+void add_fl(freelist *ptr); // add an element to a freelist
+freelist* rm_fl(freelist *ptr); // remove an element from the freelist it is in
+static int kma_init(void);
 
 /************External Declaration*****************************************/
 
@@ -65,13 +126,102 @@
 void*
 kma_malloc(kma_size_t size)
 {
-  return NULL;
+	if (!init && !kma_init())
+		return NULL; // initialization error
+	void* result;
+	int ndx = 0; // index for free list
+	int bufsize = 1 << MINPOWER; // smallest buffer size
+	size += sizeof(freelist); // account for the header
+
+	if (size > MAXBUFSIZE) return NULL; // malloc size request is larger than a page
+
+	// round up loop, inefficient
+	while (bufsize < size) {
+		ndx++;
+		bufsize <<= 1;
+	}
+
+	// after rounding up, ndx points to the correct free list
+	if(freelistlist[ndx].next != 0) // if there is a freelist of that size
+	//	result = (rm_fl(freelistlist[ndx].next)); // remove the freelist and relinkify the rest of the freelist nodes
+	return;
+	else { // otherwise, there are no freelists of that size
+		kpage_t* pagein = get_page(); // we get a page
+		int i;
+		for(i = 0; i < (PGSIZE / bufsize); i++) {
+			// find out how many of these rounded up pieces can fit in a page
+			// iterate and add that many free lists to the freelistlist of that size
+		add_fl(freelistlist[ndx].next);
+		}
+		// guaranteed to have n - 1 freelists in the freelistlist!
+		//result = (rm_fl(freelistlist[ndx].next)); // have to remove one to satisfy the malloc request
+	}
+	//return result;
 }
+
 
 void
 kma_free(void* ptr, kma_size_t size)
 {
-  ;
+  int ndx = 0;
+	int bufsize = 1 << MINPOWER;
+	size += sizeof(freelist); // size is the size of the memory allocation as seen by the requester, need to account for size that header adds in our alloc
+	if (size > MAXBUFSIZE) return; // just in case a free to something larger than a page is called for its corresponding malloc
+
+	while(bufsize < size) { // bad round up loop, bad!
+		ndx++;
+		bufsize <<= 1;
+	}
+
+	add_fl(freelistlist[ndx].next); 
+	// note that there is no actual way to return pages to the system...
 }
+
+// initialize the page request by breaking up the chunk and mapping it to the free list
+static int kma_init(void) {
+	int i,bufsize;
+	bufsize = 1 << MINPOWER;
+
+	for(i = 0; i < BUFNO; i++) {
+		freelistlist[i].sz = bufsize;
+		freelistlist[i].next = 0;
+		bufsize <<= 1;
+	}
+	init = 1;
+	return 1;
+}
+
+void add_fl(freelist *ptr) {
+	freelist tmp;
+	if (ptr == 0) {
+		tmp.sz = 1;
+		tmp.next = 0;
+	}
+	else {
+		tmp.sz = 1;
+		tmp.next = ptr;
+		tmp = *(ptr - 1);
+		ptr = &tmp;
+	}
+	return;	
+}
+
+freelist* rm_fl(freelist *ptr) {
+	freelist* tmp = ptr;
+	if(&ptr == 0) {
+		(*ptr).sz = 0;
+		ptr = 0;
+		return tmp;
+	}
+	else {
+		while(&ptr != 0) {
+			ptr = (*ptr).next;
+		}
+		(*ptr).sz = 0;
+		ptr = 0;
+		return tmp;
+	}
+}
+
 
 #endif // KMA_P2FL
