@@ -96,27 +96,19 @@
 //#define MAXPAGESIZE 4096
 
 typedef struct fl {
-	kma_size_t sz;
+	kma_size_t rnd_sz;
 	struct fl* next;
 } freelist;
 
-/*
-struct fl {
-	size_t sz;
-	fl *next;
-};
-*/
-
 /************Global Variables*********************************************/
 
-freelist freelistlist[BUFNO];
-//typedef union fl freelist;
+void* freelistlist[BUFNO];
 static int init;
 
 /************Function Prototypes******************************************/
 
-void add_fl(freelist *ptr); // add an element to a freelist
-freelist* rm_fl(freelist *ptr); // remove an element from the freelist it is in
+void add_fl(void *ptr); // add an element to a freelist
+void* rm_fl(void *ptr); // remove an element from the freelist it is in
 static int kma_init(void);
 
 /************External Declaration*****************************************/
@@ -142,21 +134,20 @@ kma_malloc(kma_size_t size)
 	}
 
 	// after rounding up, ndx points to the correct free list
-	if(freelistlist[ndx].next != 0) // if there is a freelist of that size
-	//	result = (rm_fl(freelistlist[ndx].next)); // remove the freelist and relinkify the rest of the freelist nodes
-	return;
+	if(freelistlist[ndx] != 0) // if there is a freelist of that size
+		result = rm_fl(freelistlist[ndx]); // remove the freelist and relinkify the rest of the freelist nodes
 	else { // otherwise, there are no freelists of that size
-		kpage_t* pagein = get_page(); // we get a page
+		get_page(); // we get a page
 		int i;
 		for(i = 0; i < (PGSIZE / bufsize); i++) {
 			// find out how many of these rounded up pieces can fit in a page
 			// iterate and add that many free lists to the freelistlist of that size
-		add_fl(freelistlist[ndx].next);
+		add_fl(freelistlist[ndx]);
 		}
 		// guaranteed to have n - 1 freelists in the freelistlist!
-		//result = (rm_fl(freelistlist[ndx].next)); // have to remove one to satisfy the malloc request
+		result = rm_fl(freelistlist[ndx]); // have to remove one to satisfy the malloc request
 	}
-	//return result;
+	return result;
 }
 
 
@@ -173,7 +164,7 @@ kma_free(void* ptr, kma_size_t size)
 		bufsize <<= 1;
 	}
 
-	add_fl(freelistlist[ndx].next); 
+	add_fl(freelistlist[ndx]); 
 	// note that there is no actual way to return pages to the system...
 }
 
@@ -183,44 +174,28 @@ static int kma_init(void) {
 	bufsize = 1 << MINPOWER;
 
 	for(i = 0; i < BUFNO; i++) {
-		freelistlist[i].sz = bufsize;
-		freelistlist[i].next = 0;
+		freelistlist[i] = 0;
 		bufsize <<= 1;
 	}
 	init = 1;
 	return 1;
 }
 
-void add_fl(freelist *ptr) {
-	freelist tmp;
-	if (ptr == 0) {
-		tmp.sz = 1;
-		tmp.next = 0;
-	}
-	else {
-		tmp.sz = 1;
-		tmp.next = ptr;
-		tmp = *(ptr - 1);
-		ptr = &tmp;
-	}
+void add_fl(void *ptr) {
+	
+	freelist *tmp = (freelist *) ((char *)ptr - sizeof(*tmp));
+	tmp->next = ptr;
+
+	ptr = tmp;
+
 	return;	
 }
 
-freelist* rm_fl(freelist *ptr) {
-	freelist* tmp = ptr;
-	if(&ptr == 0) {
-		(*ptr).sz = 0;
-		ptr = 0;
-		return tmp;
-	}
-	else {
-		while(&ptr != 0) {
-			ptr = (*ptr).next;
-		}
-		(*ptr).sz = 0;
-		ptr = 0;
-		return tmp;
-	}
+void* rm_fl(void *ptr) {
+	freelist *tmp = (freelist *) ((char *)ptr - sizeof(*tmp));
+	ptr = ptr.next;
+
+	return ptr;
 }
 
 
