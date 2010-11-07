@@ -191,10 +191,10 @@ void add_fl(void *ptr) {
 	return;	
 }
 
-void* rm_fl(void *ptr) {
-	freelist *tmp = (freelist *) ((char *)ptr - sizeof(*tmp));
-	ptr = ptr.next;
-
+void* rm_fl(struct fl *ptr) {
+	//freelist *tmp = (freelist *) ((char *)ptr - sizeof(*tmp));
+	
+	ptr = ptr->next;
 	return ptr;
 }
 
