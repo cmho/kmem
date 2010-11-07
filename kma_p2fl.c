@@ -108,7 +108,7 @@ static int init;
 /************Function Prototypes******************************************/
 
 void add_fl(void *ptr); // add an element to a freelist
-void* rm_fl(void *ptr); // remove an element from the freelist it is in
+void* rm_fl(struct fl *ptr); // remove an element from the freelist it is in
 static int kma_init(void);
 
 /************External Declaration*****************************************/
