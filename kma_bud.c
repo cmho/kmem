@@ -41,36 +41,176 @@
 /************System include***********************************************/
 #include <assert.h>
 #include <stdlib.h>
+#include <math.h>
 
 /************Private include**********************************************/
 #include "kpage.h"
 #include "kma.h"
 
 /************Defines and Typedefs*****************************************/
-/*  #defines and typedefs should have their names in all caps.
+/*  defines and typedefs should have their names in all caps.
  *  Global variables begin with g. Global constants with k. Local
  *  variables should be in all lower case. When initializing
  *  structures and arrays, line everything up in neat columns.
  */
+/* single word = 4, double word = 8 alignment */
+#define ALIGNMENT 4
 
+// rounding function for a multiple of alignment
+#define ALIGNUP(size) (((size) + (ALIGNMENT - 1) & ~0x7)
+
+#define SIZE_T_SIZE (ALIGNUP(sizeof(size_t)))
+
+/* header and footer field size */
+#define HEADSIZE SIZE_T_SIZE
+#define FOOTSIZE SIZE_T_SIZE
+
+// block size = f(ptr->header)
+#define SIZE(ptr) (*(size_t *)ptr)
+#define USIZE(ptr) (SIZE(ptr) & ~0x1) // masksfree bit
+
+#define FREE_TEST(ptr) (SIZE(ptr) & 0x1)
+// tests whether the block is free
+
+#define INC_PTR(ptr, n) ((void *) ((char *) ptr + n))
+
+// footer = f(header)
+#define FOOT(ptr) INC_PTR(ptr, (HEADSIZE + USIZE(ptr)))
+
+// reading a free list's link
+#define HEADLINK(ptr) ((void *)SIZE(INC_PTR(ptr, 4)))
+#define FOOTLINK(ptr) ((void *)SIZE(INC_PTR(FOOT(ptr),4)))
+
+// writing a free list's link
+#define SET_HEADLINK(ptr1, ptr2) (SIZE(INC_PTR(ptr1,4)) = (size_t)ptr2)
+#define SET_FOOTLINK(ptr1,ptr2) (SIZE(INC_PTR(FOOT(ptr1),4)) = (size_t)ptr2)
+
+#define MINPOWER 4 // gives 16 as the size of the smallest buffer
+#define MAXBUFSIZE 4096 // assuming that a page is 4 kilobytes...
+#define PGSIZE 4096
+
+#define BUFNO 6
+
+#define PGROUNDUP(sz) (((sz)+PGSIZE-1) & ~(PGSIZE-1))
+ 
+typedef struct fl {
+	void* ptr;
+	struct fl* next;
+} freelist;
+
+// this is a struct for the headers of the free lists
+// because it makes it easier for me to read the code
+typedef struct flhead {
+	kma_size_t rnd_sz;
+	struct fl* start;
+} fl_header;
 /************Global Variables*********************************************/
-
+fl_header* freelistlist[BUFNO];
+int bmap[MAXBUFSIZE];
+static int init;
 /************Function Prototypes******************************************/
-	
+void add_fl(void *ptr); // add an element to a freelist
+void* rm_fl(void *ptr); // remove an element from the freelist it is in
+void split_page(kpage_t *page, kma_size_t size);
+static int kma_init();
 /************External Declaration*****************************************/
 
 /**************Implementation***********************************************/
 
+static int kma_init(void)
+{
+	int i,divby;
+
+	for(i = 0; i < BUFNO; i++) {
+		divby = pow(2, i);
+		freelistlist[i]->rnd_sz = PAGESIZE / divby;
+		freelistlist[i]->start = 0;
+	}
+	init = 1;
+	return 1;
+}
+
 void*
 kma_malloc(kma_size_t size)
 {
-  return NULL;
+  	if (!init && !kma_init())
+		return NULL; // initialization error
+	void* result;
+	int ndx = BUFNO - 1; // index for free list
+	int bufsize = 1 << MINPOWER; // smallest buffer size
+	size += sizeof(freelist); // account for the header
+
+	if (size > MAXBUFSIZE) return NULL; // malloc size request is larger than a page
+
+	// round up loop, inefficient
+	while (bufsize < size) {
+		ndx--;
+		bufsize <<= 1;
+	}
+
+	// after rounding up, ndx points to the correct free list
+	if(freelistlist[ndx]->start != 0) // if there is a freelist of that size
+		result = rm_fl(freelistlist[ndx]); // remove the freelist from the list and relinkify the rest of the freelist nodes
+	else { // otherwise, there are no freelists of that size
+		kpage_t *pageptr = get_page();
+		split_page(pageptr, size);
+		//get_page(); // we get a page
+		int i;
+		for(i = 0; i < (PGSIZE / bufsize); i++) {
+			// find out how many of these rounded up pieces can fit in a page
+			// iterate and add that many free lists to the freelistlist of that size
+			add_fl(freelistlist[ndx]);
+		}
+		// guaranteed to have n - 1 freelists in the freelistlist!
+		result = rm_fl(freelistlist[ndx]); // have to remove one to satisfy the malloc request
+	}
+	return result;
 }
 
 void 
 kma_free(void* ptr, kma_size_t size)
 {
   ;
+}
+
+void split_page(kpage_t *page, kma_size_t size)
+{
+	int cur_size = PAGESIZE / 2;
+	int cur_offset = 0;
+	int i;
+	freelist *tmp;
+	freelist *tmp_bud;
+	while(cur_size >= size) {
+		tmp->ptr = *(&page + cur_offset);
+		tmp_bud->ptr = *(&tmp + cur_size);
+		for (i = 0; i < BUFNO; i++) {
+			if (freelistlist[i]->rnd_sz == cur_size) {
+				tmp->next = freelistlist[i]->start;
+				freelistlist[i]->start = tmp;
+				tmp_bud->next = freelistlist[i]->start;
+				freelistlist[i]->start = tmp_bud;
+				break;
+			}
+		}
+		cur_size = cur_size / 2;
+		cur_offset += cur_size;
+	}
+}
+
+void add_fl(void *ptr) {
+	
+	freelist *tmp = (freelist *)ptr;
+	tmp->next = ptr;
+
+	ptr = tmp;
+	return;	
+}
+
+void* rm_fl(void *ptr) {
+	freelist *tmp = (freelist *)ptr;
+	tmp = tmp->next;
+	ptr = tmp;
+	return *(&ptr + sizeof(freelist));
 }
 
 #endif // KMA_BUD
