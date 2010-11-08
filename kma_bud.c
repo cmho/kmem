@@ -1,4 +1,5 @@
-/***************************************************************************
+
+ /***************************************************************************
  *  Title: Kernel Memory Allocator
  * -------------------------------------------------------------------------
  *    Purpose: Kernel memory allocator based on the buddy algorithm
@@ -152,16 +153,23 @@ kma_malloc(kma_size_t size)
 	if(freelistlist[ndx]->start != 0) // if there is a freelist of that size
 		result = rm_fl(freelistlist[ndx]); // remove the freelist from the list and relinkify the rest of the freelist nodes
 	else { // otherwise, there are no freelists of that size
+		int foundsplittable = 0;
+		int splitwhere = BUFNO;
+		
+		// see if there are any larger spaces open to split
+		while (--ndx >= 0) {
+			if (freelistlist[ndx]->start != 0) {
+				foundsplittable = 1;
+				splitwhere = ndx;
+				result = split_block(freelistlist[ndx], freelistlist[ndx]->rnd_sz/2);
+				break;
+			}
+		}
+		
+		// no larger freelists either
 		kpage_t *pageptr = get_page();
 		split_page(pageptr, size);
-		//get_page(); // we get a page
-		int i;
-		for(i = 0; i < (PGSIZE / bufsize); i++) {
-			// find out how many of these rounded up pieces can fit in a page
-			// iterate and add that many free lists to the freelistlist of that size
-			add_fl(freelistlist[ndx]);
-		}
-		// guaranteed to have n - 1 freelists in the freelistlist!
+		
 		result = rm_fl(freelistlist[ndx]); // have to remove one to satisfy the malloc request
 	}
 	return result;
@@ -175,26 +183,46 @@ kma_free(void* ptr, kma_size_t size)
 
 void split_page(kpage_t *page, kma_size_t size)
 {
+	// current size of split
 	int cur_size = PAGESIZE / 2;
-	int cur_offset = 0;
 	int i;
 	freelist *tmp;
 	freelist *tmp_bud;
+	// set up initial ptrs for the buddies
+	tmp->ptr = page;
+	tmp_bud->ptr = *(&tmp + cur_size);
+	void* ret;
+	// until we get to the size we need:
 	while(cur_size >= size) {
-		tmp->ptr = *(&page + cur_offset);
+		// decrement size of chunk
+		cur_size = cur_size / 2;
+		// remove last iteration's buddy from its list
+		ret = rm_fl(tmp_bud);
+		// create new ptr at its beginning
+		tmp->ptr = ret;
+		// create buddy at tmp's addr + the current block size
 		tmp_bud->ptr = *(&tmp + cur_size);
 		for (i = 0; i < BUFNO; i++) {
+			// check if the current list is the right size
 			if (freelistlist[i]->rnd_sz == cur_size) {
+				// if so, add ptr and buddy to it
 				tmp->next = freelistlist[i]->start;
 				freelistlist[i]->start = tmp;
 				tmp_bud->next = freelistlist[i]->start;
 				freelistlist[i]->start = tmp_bud;
+				// found it, so we're done here
 				break;
 			}
 		}
-		cur_size = cur_size / 2;
-		cur_offset += cur_size;
 	}
+}
+
+void* split_block(void *ptr, int sz) {
+	void *tmp = (freelist *)rm_fl(ptr);
+	void *tmp_bud = *(&tmp + sz);
+	add_fl(tmp);
+	add_fl(tmp_bud);
+	return tmp;
 }
 
 void add_fl(void *ptr) {
