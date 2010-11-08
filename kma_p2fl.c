@@ -42,13 +42,14 @@
 /************System include***********************************************/
 #include <assert.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 /************Private include**********************************************/
 #include "kpage.h"
 #include "kma.h"
 
 /************Defines and Typedefs*****************************************/
-/*  #defines and typedefs should have their names in all caps.
+/*  defines and typedefs should have their names in all caps.
  *  Global variables begin with g. Global constants with k. Local
  *  variables should be in all lower case. When initializing
  *  structures and arrays, line everything up in neat columns.
@@ -70,7 +71,8 @@
 #define SIZE(ptr) (*(size_t *)ptr)
 #define USIZE(ptr) (SIZE(ptr) & ~0x1) // masksfree bit
 
-#define FREE_TEST(ptr) (SIZE(ptr) & 0x1) // tests whether the block is free
+#define FREE_TEST(ptr) (SIZE(ptr) & 0x1)
+// tests whether the block is free
 
 #define INC_PTR(ptr, n) ((void *) ((char *) ptr + n))
 
@@ -108,7 +110,7 @@ static int init;
 /************Function Prototypes******************************************/
 
 void add_fl(void *ptr); // add an element to a freelist
-void* rm_fl(struct fl *ptr); // remove an element from the freelist it is in
+void* rm_fl(void *ptr); // remove an element from the freelist it is in
 static int kma_init(void);
 
 /************External Declaration*****************************************/
@@ -142,7 +144,7 @@ kma_malloc(kma_size_t size)
 		for(i = 0; i < (PGSIZE / bufsize); i++) {
 			// find out how many of these rounded up pieces can fit in a page
 			// iterate and add that many free lists to the freelistlist of that size
-		add_fl(freelistlist[ndx]);
+			add_fl(freelistlist[ndx]);
 		}
 		// guaranteed to have n - 1 freelists in the freelistlist!
 		result = rm_fl(freelistlist[ndx]); // have to remove one to satisfy the malloc request
@@ -183,20 +185,18 @@ static int kma_init(void) {
 
 void add_fl(void *ptr) {
 	
-	freelist *tmp = (freelist *) ((char *)ptr - sizeof(*tmp));
+	freelist *tmp = (freelist *)ptr;
 	tmp->next = ptr;
 
 	ptr = tmp;
-
 	return;	
 }
 
-void* rm_fl(struct fl *ptr) {
-	//freelist *tmp = (freelist *) ((char *)ptr - sizeof(*tmp));
-	
-	ptr = ptr->next;
-	return ptr;
+void* rm_fl(void *ptr) {
+	freelist *tmp = (freelist *)ptr;
+	tmp = tmp->next;
+	ptr = tmp;
+	return *(&ptr + sizeof(freelist));
 }
-
 
 #endif // KMA_P2FL
