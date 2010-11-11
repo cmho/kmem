@@ -168,7 +168,7 @@ kma_free(void* ptr, kma_size_t size)
   
 }
 
-// not entirely sure we need this anymore—replaced by split_block.
+// not entirely sure we need this anymoreÑreplaced by split_block.
 // we can just call split_block on a block size of PAGESIZE I think?
 void split_page(kpage_t *page, kma_size_t size)
 {
@@ -178,7 +178,7 @@ void split_page(kpage_t *page, kma_size_t size)
 	freelist *tmp;
 	freelist *tmp_bud;
 	// set up initial ptrs for the buddies
-	tmp->ptr = page;
+	tmp->ptr = (void* )page;
 	tmp_bud->ptr = *(&tmp + cur_size);
 	void* ret;
 	// until we get to the size we need:
@@ -210,12 +210,12 @@ void split_page(kpage_t *page, kma_size_t size)
 // the previous buddy will still have the ptr to this one, but this one won't have its old buddy
 // (amirite?)
 void coalesce_blocks(void *ptr, int sz) {
-	freelist* tmp;
-	tmp = (freelist*) ptr;
-	if (tmp->buddy->free == 1) { // doesn't work; idk structs?
+	freelist* tmp = (freelist*) ptr;
+	freelist* tmp_buddy = (freelist*) tmp->buddy;
+	if (tmp_buddy->free == 1) { // doesn't work; idk structs?
 		void* result;
 		result = rm_fl(ptr);
-		add_fl(tmp->buddy->ptr, pow(2, tmp->exp + 1));
+		add_fl(tmp_buddy->ptr, pow(2, tmp->exp + 1));
 	}
 	return;
 }
@@ -261,14 +261,10 @@ void add_fl_buddies(void *ptr1, void *ptr2, int bufsize) { // ptr is a pointer t
 }
 
 void* rm_fl(void *ptr) { 
-	freelist tmp;
-	freelist *tmp2;
-	tmp2 = (freelist *) ptr;
-	tmp = *tmp2;
-	tmp = *(tmp->ptr);
-	coalesce_blocks(ptr, ptr->rnd_sz);
-//	ptr = (void *) &tmp;
-	return ((char *)tmp2 + sizeof(freelist));
+	freelist *tmp = ptr;
+	tmp = tmp->ptr;
+	coalesce_blocks(tmp, tmp->rnd_sz);
+	return ((char *)tmp + sizeof(freelist));
 }
 
 #endif // KMA_BUD
