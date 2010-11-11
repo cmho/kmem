@@ -73,12 +73,10 @@ typedef struct fl {
 
 typedef struct flhead {
 	kma_size_t rnd_sz;
-	struct fl* start;
+	void* start;
 } fl_header;
 
 /************Global Variables*********************************************/
-
-void* freelistlist[BUFNO];
 int fl_count[BUFNO];
 //void* pageaddresses[MAXPGNUM];
 static int init;
@@ -88,11 +86,12 @@ fl_header* freelistlist[BUFNO];
 int bmap[MAXBUFSIZE];
 static int init;
 /************Function Prototypes******************************************/
-void add_fl(void *ptr); // add an element to a freelist
+void add_fl(void *ptr, int bufsize); // add an element to a freelist
+void add_fl_buddies(void *ptr1, void *ptr2, int bufsize);
 void* rm_fl(void *ptr); // remove an element from the freelist it is in
 void split_page(kpage_t *page, kma_size_t size);
-void split_blk(void *ptr);
-void coalesce_blk(void *ptr);
+void split_block(void *ptr, int sz);
+void coalesce_block(void *ptr);
 static int kma_init();
 /************External Declaration*****************************************/
 
@@ -141,14 +140,14 @@ kma_malloc(kma_size_t size)
 			if (freelistlist[ndx]->start != 0) {
 				foundsplittable = 1;
 				splitwhere = ndx;
-				result = split_block(freelistlist[ndx], freelistlist[ndx]->rnd_sz/2);
+				result = split_block(freelistlist[ndx]->start, freelistlist[ndx]->rnd_sz/2);
 				break;
 			}
 		}
 		
 		// no larger freelists either
 		kpage_t *pageptr = get_page();
-		split_page(pageptr, size);
+		split_block(pageptr, size);
 		
 		result = rm_fl(freelistlist[ndx]); // have to remove one to satisfy the malloc request
 	}
@@ -161,13 +160,16 @@ kma_free(void* ptr, kma_size_t size)
   ptr = (freelist*) ptr;
   int i;
   for (i = 0; i < BUFNO; i++) {
-  	if (freelistlist[i]->rnd_sz == size && freelistlist->ptr != 0) {
-  		
+  	if (freelistlist[i]->rnd_sz == size && freelistlist[i]->ptr != 0) {
+  		//there's a freelist of the size of our block, and it has at least one other free list node in it
+  		// I don't remember where I was going with this
   	}
   }
   
 }
 
+// not entirely sure we need this anymore—replaced by split_block.
+// we can just call split_block on a block size of PAGESIZE I think?
 void split_page(kpage_t *page, kma_size_t size)
 {
 	// current size of split
@@ -205,6 +207,8 @@ void split_page(kpage_t *page, kma_size_t size)
 }
 
 // issue: will coalesce blocks to their old buddies, but what about if they were split multiple times?
+// the previous buddy will still have the ptr to this one, but this one won't have its old buddy
+// (amirite?)
 void coalesce_blocks(void *ptr, int sz) {
 	freelist tmp;
 	tmp = (freelist*) ptr;
@@ -216,14 +220,17 @@ void coalesce_blocks(void *ptr, int sz) {
 	return;
 }
 
+// gets block, halfway into block
+// then adds them both and makes them buddies
+// and returns the first one
 void* split_block(void *ptr, int sz) {
 	void *tmp = rm_fl(ptr);
 	void *tmp_bud = *(&tmp + sz);
-	add_fl(tmp);
-	add_fl(tmp_bud);
+	add_fl_buddies(tmp, tmp_bud);
 	return tmp;
 }
 
+// regular add_fl for single adds (e.g. re-adding free'd blocks whose buddy is still in use)
 void add_fl(void *ptr, int bufsize) { // ptr is a pointer to the beginning of the freelist
 	// tmp is a new element in the free list that we are adding
 	freelist tmp; // need to figure out WHERE this is pointing to
