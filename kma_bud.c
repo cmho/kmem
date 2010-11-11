@@ -1,4 +1,3 @@
-
  /***************************************************************************
  *  Title: Kernel Memory Allocator
  * -------------------------------------------------------------------------
@@ -55,57 +54,36 @@
  *  structures and arrays, line everything up in neat columns.
  */
 /* single word = 4, double word = 8 alignment */
-#define ALIGNMENT 4
-
-// rounding function for a multiple of alignment
-#define ALIGNUP(size) (((size) + (ALIGNMENT - 1) & ~0x7)
-
-#define SIZE_T_SIZE (ALIGNUP(sizeof(size_t)))
-
-/* header and footer field size */
-#define HEADSIZE SIZE_T_SIZE
-#define FOOTSIZE SIZE_T_SIZE
-
-// block size = f(ptr->header)
-#define SIZE(ptr) (*(size_t *)ptr)
-#define USIZE(ptr) (SIZE(ptr) & ~0x1) // masksfree bit
-
-#define FREE_TEST(ptr) (SIZE(ptr) & 0x1)
-// tests whether the block is free
-
-#define INC_PTR(ptr, n) ((void *) ((char *) ptr + n))
-
-// footer = f(header)
-#define FOOT(ptr) INC_PTR(ptr, (HEADSIZE + USIZE(ptr)))
-
-// reading a free list's link
-#define HEADLINK(ptr) ((void *)SIZE(INC_PTR(ptr, 4)))
-#define FOOTLINK(ptr) ((void *)SIZE(INC_PTR(FOOT(ptr),4)))
-
-// writing a free list's link
-#define SET_HEADLINK(ptr1, ptr2) (SIZE(INC_PTR(ptr1,4)) = (size_t)ptr2)
-#define SET_FOOTLINK(ptr1,ptr2) (SIZE(INC_PTR(FOOT(ptr1),4)) = (size_t)ptr2)
-
-#define MINPOWER 4 // gives 16 as the size of the smallest buffer
-#define MAXBUFSIZE 4096 // assuming that a page is 4 kilobytes...
-#define PGSIZE 4096
-
-#define BUFNO 6
+#define MINPOWER 5 // gives 16 as the size of the smallest buffer
+#define MAXBUFSIZE 8192 // assuming that a page is 4 kilobytes...
+#define PGSIZE 8192
+#define MAXPGNUM 20
+#define BUFNO 8 
 
 #define PGROUNDUP(sz) (((sz)+PGSIZE-1) & ~(PGSIZE-1))
- 
+
+
 typedef struct fl {
-	void* ptr;
+	kma_size_t rnd_sz;
+	int exp;
 	struct fl* next;
+	void *buddy;
+	int free;
 } freelist;
 
-// this is a struct for the headers of the free lists
-// because it makes it easier for me to read the code
 typedef struct flhead {
 	kma_size_t rnd_sz;
 	struct fl* start;
 } fl_header;
+
 /************Global Variables*********************************************/
+
+void* freelistlist[BUFNO];
+int fl_count[BUFNO];
+//void* pageaddresses[MAXPGNUM];
+static int init;
+int pgno;
+
 fl_header* freelistlist[BUFNO];
 int bmap[MAXBUFSIZE];
 static int init;
@@ -113,6 +91,8 @@ static int init;
 void add_fl(void *ptr); // add an element to a freelist
 void* rm_fl(void *ptr); // remove an element from the freelist it is in
 void split_page(kpage_t *page, kma_size_t size);
+void split_blk(void *ptr);
+void coalesce_blk(void *ptr);
 static int kma_init();
 /************External Declaration*****************************************/
 
@@ -178,7 +158,14 @@ kma_malloc(kma_size_t size)
 void 
 kma_free(void* ptr, kma_size_t size)
 {
-  ;
+  ptr = (freelist*) ptr;
+  int i;
+  for (i = 0; i < BUFNO; i++) {
+  	if (freelistlist[i]->rnd_sz == size && freelistlist->ptr != 0) {
+  		
+  	}
+  }
+  
 }
 
 void split_page(kpage_t *page, kma_size_t size)
@@ -217,28 +204,64 @@ void split_page(kpage_t *page, kma_size_t size)
 	}
 }
 
+// issue: will coalesce blocks to their old buddies, but what about if they were split multiple times?
+void coalesce_blocks(void *ptr, int sz) {
+	freelist tmp;
+	tmp = (freelist*) ptr;
+	if (tmp->buddy->free == 1) {
+		void* result;
+		result = rm_fl(ptr);
+		add_fl(tmp->buddy->ptr, pow(2, tmp->exp + 1));
+	}
+	return;
+}
+
 void* split_block(void *ptr, int sz) {
-	void *tmp = (freelist *)rm_fl(ptr);
+	void *tmp = rm_fl(ptr);
 	void *tmp_bud = *(&tmp + sz);
 	add_fl(tmp);
 	add_fl(tmp_bud);
 	return tmp;
 }
 
-void add_fl(void *ptr) {
-	
-	freelist *tmp = (freelist *)ptr;
-	tmp->next = ptr;
-
-	ptr = tmp;
+void add_fl(void *ptr, int bufsize) { // ptr is a pointer to the beginning of the freelist
+	// tmp is a new element in the free list that we are adding
+	freelist tmp; // need to figure out WHERE this is pointing to
+	freelist *tmp2;
+	tmp.next = (struct fl* ) ((char *) ptr + bufsize); // we assign the next pointer of our next element to the beginning of the freelist
+	tmp2 = (freelist *) ptr; // the new beginning of the free list is tmp
+	tmp = *tmp2;
 	return;	
 }
 
-void* rm_fl(void *ptr) {
-	freelist *tmp = (freelist *)ptr;
-	tmp = tmp->next;
-	ptr = tmp;
-	return *(&ptr + sizeof(freelist));
+void add_fl_buddies(void *ptr1, void *ptr2 int bufsize) { // ptr is a pointer to the beginning of the void 
+	// tmp is a new element in the free list that we are adding
+	freelist tmp; // need to figure out WHERE this is pointing to
+	freelist *tmp_tmp;
+	freelist tmp2;
+	freelist *tmp2_tmp;
+	tmp.next = (struct fl* ) ((char *) ptr1 + bufsize); // we assign the next pointer of our next element to the beginning of the freelist
+	tmp_tmp = (freelist *) ptr1; // the new beginning of the free list is tmp
+	tmp = *tmp_tmp;
+	tmp2.next = (struct fl*) ((char *) ptr2 + bufsize);
+	tmp2_tmp = (freelist *) ptr2;
+	tmp2 = *tmp2_tmp;
+	tmp.buddy = tmp2;
+	tmp2.buddy = tmp;
+	tmp.free = 1;
+	tmp2.free = 1;
+	return;	
+}
+
+void* rm_fl(void *ptr) { 
+	freelist tmp;
+	freelist *tmp2;
+	tmp2 = (freelist *) ptr;
+	tmp = *tmp2;
+	tmp = *(tmp.next);
+	coalesce_blocks(ptr);
+//	ptr = (void *) &tmp;
+	return ((char *)tmp2 + sizeof(freelist));
 }
 
 #endif // KMA_BUD
