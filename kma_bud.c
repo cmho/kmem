@@ -66,7 +66,7 @@
 typedef struct fl {
 	kma_size_t rnd_sz;
 	int exp;
-	struct fl* next;
+	struct fl* ptr;
 	void *buddy;
 	int free;
 } freelist;
@@ -90,7 +90,7 @@ void add_fl(void *ptr, int bufsize); // add an element to a freelist
 void add_fl_buddies(void *ptr1, void *ptr2, int bufsize);
 void* rm_fl(void *ptr); // remove an element from the freelist it is in
 void split_page(kpage_t *page, kma_size_t size);
-void split_block(void *ptr, int sz);
+void* split_block(void *ptr, int sz);
 void coalesce_block(void *ptr);
 static int kma_init();
 /************External Declaration*****************************************/
@@ -160,7 +160,7 @@ kma_free(void* ptr, kma_size_t size)
   ptr = (freelist*) ptr;
   int i;
   for (i = 0; i < BUFNO; i++) {
-  	if (freelistlist[i]->rnd_sz == size && freelistlist[i]->ptr != 0) {
+  	if (freelistlist[i]->rnd_sz == size && freelistlist[i]->start != 0) {
   		//there's a freelist of the size of our block, and it has at least one other free list node in it
   		// I don't remember where I was going with this
   	}
@@ -195,9 +195,9 @@ void split_page(kpage_t *page, kma_size_t size)
 			// check if the current list is the right size
 			if (freelistlist[i]->rnd_sz == cur_size) {
 				// if so, add ptr and buddy to it
-				tmp->next = freelistlist[i]->start;
+				tmp->ptr = freelistlist[i]->start;
 				freelistlist[i]->start = tmp;
-				tmp_bud->next = freelistlist[i]->start;
+				tmp_bud->ptr = freelistlist[i]->start;
 				freelistlist[i]->start = tmp_bud;
 				// found it, so we're done here
 				break;
@@ -210,9 +210,9 @@ void split_page(kpage_t *page, kma_size_t size)
 // the previous buddy will still have the ptr to this one, but this one won't have its old buddy
 // (amirite?)
 void coalesce_blocks(void *ptr, int sz) {
-	freelist tmp;
+	freelist* tmp;
 	tmp = (freelist*) ptr;
-	if (tmp->buddy->free == 1) {
+	if (tmp->buddy->free == 1) { // doesn't work; idk structs?
 		void* result;
 		result = rm_fl(ptr);
 		add_fl(tmp->buddy->ptr, pow(2, tmp->exp + 1));
@@ -226,7 +226,7 @@ void coalesce_blocks(void *ptr, int sz) {
 void* split_block(void *ptr, int sz) {
 	void *tmp = rm_fl(ptr);
 	void *tmp_bud = *(&tmp + sz);
-	add_fl_buddies(tmp, tmp_bud);
+	add_fl_buddies(tmp, tmp_bud, sz);
 	return tmp;
 }
 
@@ -235,26 +235,26 @@ void add_fl(void *ptr, int bufsize) { // ptr is a pointer to the beginning of th
 	// tmp is a new element in the free list that we are adding
 	freelist tmp; // need to figure out WHERE this is pointing to
 	freelist *tmp2;
-	tmp.next = (struct fl* ) ((char *) ptr + bufsize); // we assign the next pointer of our next element to the beginning of the freelist
 	tmp2 = (freelist *) ptr; // the new beginning of the free list is tmp
+	tmp2->ptr = (struct fl* ) ((char *) ptr + bufsize); // we assign the next pointer of our next element to the beginning of the freelist
 	tmp = *tmp2;
 	return;	
 }
 
-void add_fl_buddies(void *ptr1, void *ptr2 int bufsize) { // ptr is a pointer to the beginning of the void 
+void add_fl_buddies(void *ptr1, void *ptr2, int bufsize) { // ptr is a pointer to the beginning of the void 
 	// tmp is a new element in the free list that we are adding
 	freelist tmp; // need to figure out WHERE this is pointing to
 	freelist *tmp_tmp;
 	freelist tmp2;
 	freelist *tmp2_tmp;
-	tmp.next = (struct fl* ) ((char *) ptr1 + bufsize); // we assign the next pointer of our next element to the beginning of the freelist
+	tmp_tmp->ptr = (struct fl* ) ((char *) ptr1 + bufsize); // we assign the next pointer of our next element to the beginning of the freelist
 	tmp_tmp = (freelist *) ptr1; // the new beginning of the free list is tmp
 	tmp = *tmp_tmp;
-	tmp2.next = (struct fl*) ((char *) ptr2 + bufsize);
+	tmp2_tmp->ptr = (struct fl*) ((char *) ptr2 + bufsize);
 	tmp2_tmp = (freelist *) ptr2;
 	tmp2 = *tmp2_tmp;
-	tmp.buddy = tmp2;
-	tmp2.buddy = tmp;
+	tmp_tmp->buddy = tmp2_tmp;
+	tmp2_tmp->buddy = tmp_tmp;
 	tmp.free = 1;
 	tmp2.free = 1;
 	return;	
@@ -265,8 +265,8 @@ void* rm_fl(void *ptr) {
 	freelist *tmp2;
 	tmp2 = (freelist *) ptr;
 	tmp = *tmp2;
-	tmp = *(tmp.next);
-	coalesce_blocks(ptr);
+	tmp = *(tmp->ptr);
+	coalesce_blocks(ptr, ptr->rnd_sz);
 //	ptr = (void *) &tmp;
 	return ((char *)tmp2 + sizeof(freelist));
 }
