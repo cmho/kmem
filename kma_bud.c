@@ -1,18 +1,18 @@
- /***************************************************************************
+/***************************************************************************
  *  Title: Kernel Memory Allocator
  * -------------------------------------------------------------------------
- *    Purpose: Kernel memory allocator based on the buddy algorithm
+ *    Purpose: Test suite for the kernel memory allocator
  *    Author: Stefan Birrer
- *    Version: $Revision: 1.2 $
+ *    Version: $Revision: 1.3 $
  *    Last Modification: $Date: 2009/10/31 21:28:52 $
- *    File: $RCSfile: kma_bud.c,v $
+ *    File: $RCSfile: kma.c,v $
  *    Copyright: 2004 Northwestern University
  ***************************************************************************/
 /***************************************************************************
  *  ChangeLog:
  * -------------------------------------------------------------------------
- *    $Log: kma_bud.c,v $
- *    Revision 1.2  2009/10/31 21:28:52  jot836
+ *    $Log: kma.c,v $
+ *    Revision 1.3  2009/10/31 21:28:52  jot836
  *    This is the current version of KMA project 3.
  *    It includes:
  *    - the most up-to-date handout (F'09)
@@ -25,8 +25,17 @@
  *    - different version of the testsuite for use on the submission site, including:
  *        scoreboard Python scripts, which posts the top 5 scores on the course webpage
  *
+ *    Revision 1.2  2009/10/21 07:06:46  npb853
+ *    New test framework in place. Also adding a new sample testcase file
+ *
  *    Revision 1.1  2005/10/24 16:07:09  sbirrer
  *    - skeleton
+ *
+ *    Revision 1.4  2004/11/30 22:11:42  sbirrer
+ *    - assure always one allocation pending during test
+ *
+ *    Revision 1.3  2004/11/16 19:33:50  sbirrer
+ *    - increased the request size
  *
  *    Revision 1.2  2004/11/05 15:45:56  sbirrer
  *    - added size as a parameter to kma_free
@@ -34,13 +43,17 @@
  *    Revision 1.1  2004/11/03 23:04:03  sbirrer
  *    - initial version for the kernel memory allocator project
  *
+ *    Revision 1.1  2004/11/03 18:34:52  sbirrer
+ *    - initial version of the kernel memory project
+ *
  ***************************************************************************/
-#ifdef KMA_BUD
-#define __KMA_IMPL__
+#define __KMA_TEST_IMPL__
 
 /************System include***********************************************/
 #include <assert.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 #include <math.h>
 
 /************Private include**********************************************/
@@ -48,176 +61,304 @@
 #include "kma.h"
 
 /************Defines and Typedefs*****************************************/
-/*  defines and typedefs should have their names in all caps.
+/*  #defines and typedefs should have their names in all caps.
  *  Global variables begin with g. Global constants with k. Local
  *  variables should be in all lower case. When initializing
  *  structures and arrays, line everything up in neat columns.
  */
-/* single word = 4, double word = 8 alignment */
-#define MINPOWER 5 // gives 16 as the size of the smallest buffer
-#define MAXBUFSIZE 8192 // assuming that a page is 4 kilobytes...
-#define PGSIZE 8192
-#define MAXPGNUM 20
-#define BUFNO 8 
 
-#define PGROUNDUP(sz) (((sz)+PGSIZE-1) & ~(PGSIZE-1))
+enum REQ_STATE
+  {
+    FREE,
+    USED
+  };
 
-
-typedef struct fl {
-	kma_size_t rnd_sz;
-	int exp;
-	struct fl* ptr;
-	void *buddy;
-	int free;
-} freelist;
+typedef struct mem
+{
+  int size;
+  void* ptr;
+  void* value; // to check correctness
+  enum REQ_STATE state;
+} mem_t;
 
 /************Global Variables*********************************************/
-int fl_count[BUFNO];
-//void* pageaddresses[MAXPGNUM];
-static int init;
-int pgno;
 
-void* freelistlist[BUFNO];
-int bmap[MAXBUFSIZE];
-int divblk[BUFNO];
-static int init;
+static int val = 0;
+
 /************Function Prototypes******************************************/
-void add_fl(void *ptr, int bufsize); // add an element to a freelist
-void add_fl_buddies(void *ptr1, void *ptr2, int bufsize);
-void* rm_fl(void *ptr); // remove an element from the freelist it is in
-void* split_block(void *ptr, int sz);
-void coalesce_block(void *ptr);
-static int kma_init();
+void allocate();
+void deallocate();
+void fill(char*, int);
+void check(char*, char*, int);
+void usage();
+void error(char*, char*);
+void pass();
+void fail();
+
 /************External Declaration*****************************************/
+
+
 
 /**************Implementation***********************************************/
 
-static int kma_init(void)
+int anyMismatches = 0;
+
+int currentAllocBytes = 0;
+
+char *name = NULL;
+
+int
+main(int argc, char* argv[])
 {
-	int i;
-
-	for(i = 0; i < BUFNO; i++) {
-		divblk[i] = pow(2, i);
-		freelistlist[i] = 0;
-	}
-	init = 1;
-	return 1;
-}
-
-void*
-kma_malloc(kma_size_t size)
-{
-  	if (!init && !kma_init())
-		return NULL; // initialization error
-	void* result;
-	int ndx = BUFNO - 1; // index for free list
-	int bufsize = 1 << MINPOWER; // smallest buffer size
-	size += sizeof(freelist); // account for the header
-
-	if (size > MAXBUFSIZE) return NULL; // malloc size request is larger than a page
-
-	// round up loop, inefficient
-	while (bufsize < size) {
-		ndx--;
-		bufsize <<= 1;
-	}
-	
-	freelist* tmp = freelistlist[ndx];
-
-	// after rounding up, ndx points to the correct free list
-	if(freelistlist[ndx] != 0 && fl_count[ndx] > 0) // if there is a freelist of that size
-		result = rm_fl(freelistlist[ndx]); // remove the freelist from the list and relinkify the rest of the freelist nodes
-	else { // otherwise, there are no freelists of that size
-		int foundsplittable = 0;
-		int splitwhere = BUFNO;
-		
-		// see if there are any larger spaces open to split
-		while (--ndx >= 0) {
-			if (freelistlist[ndx] != 0) {
-				foundsplittable = 1;
-				splitwhere = ndx;
-				result = split_block(tmp->ptr, tmp->rnd_sz/2);
-				break;
-			}
-		}
-		
-		// no larger freelists either
-		kpage_t *pageptr = get_page();
-		split_block(pageptr, size);
-		
-		result = rm_fl(freelistlist[ndx]); // have to remove one to satisfy the malloc request
-	}
-	return result;
-}
-
-void 
-kma_free(void* ptr, kma_size_t size)
-{
-  freelist* tmp = (freelist*) ptr;
-  int i;
-  for (i = 0; i < BUFNO; i++) {
-  	if (tmp->rnd_sz == size && tmp->ptr != 0) {
-  		//there's a freelist of the size of our block, and it has at least one other free list node in it
-  		// I don't remember where I was going with this
-  	}
-  }
   
-}
+  name = argv[0];
+  
+#ifdef COMPETITION
+  printf("%s: Running in competition mode\n", name);
+#endif
 
-// issue: will coalesce blocks to their old buddies, but what about if they were split multiple times?
-// the previous buddy will still have the ptr to this one, but this one won't have its old buddy
-// (amirite?)
-void coalesce_blocks(void *ptr, int sz) {
-	int whatever = 5; // For some bizarre reason it doesn't read this line! wtf.
-	freelist* tmp = ptr - 8;
-	freelist* tmp_buddy = tmp->buddy;
-	if (tmp_buddy->ptr != 0) { // doesn't work; idk structs?
-		void* result = rm_fl(ptr);
-		add_fl(tmp_buddy->ptr, pow(2, tmp->exp + 1));
+#ifndef COMPETITION
+  printf("%s: Running in correctness mode\n", name);
+#endif
+
+  int n_req = 0, n_alloc=0, n_dealloc=0;
+  kpage_stat_t* stat;
+
+#ifdef COMPETITION
+  double ratioSum = 0.0;
+  int ratioCount = 0;
+#endif
+  
+#ifndef COMPETITION
+  FILE* allocTrace = fopen("kma_output.dat", "w");
+  if (allocTrace == NULL)
+    {
+      error("unable to open allocation output file", "kma_output.dat");
+    }
+  fprintf(allocTrace, "0 0 0\n");
+#endif
+
+  if (argc != 2)
+    {
+      usage();
+    }
+  
+  FILE* f_test = fopen(argv[1], "r");
+  if (f_test == NULL)
+    {
+      error("unable to open input test file", argv[1]);
+    }
+  
+  // Get the number of requests in the trace file
+  // Allocate some memory...
+  int status = fscanf(f_test, "%d\n", &n_req);
+  if(status != 1)
+    error("Couldn't read number of requests at head of file", "");
+  
+  mem_t* requests = malloc((n_req + 1)*sizeof(mem_t));
+  memset(requests, 0, (n_req + 1)*sizeof(mem_t));
+  
+  char command[16];
+  int req_id, req_size, index = 1;
+
+  // Parse the lines in the file, and call allocate or
+  // deallocate accordingly.
+  while (fscanf(f_test, "%10s", command) == 1)
+    {
+      if (strcmp(command, "REQUEST") == 0)
+	{
+	  
+	  if (fscanf(f_test, "%d %d", &req_id, &req_size) != 2)
+	    error("Not enough arguments to REQUEST", "");
+
+	  assert(req_id >= 0 && req_id < n_req);
+	  
+	  allocate(requests, req_id, req_size);
+	  n_alloc++;
 	}
-	return;
+      else if (strcmp(command, "FREE") == 0)
+	{
+	  if (fscanf(f_test, "%d", &req_id) != 1)
+	    error("Not enough arguments to FREE", "");
+	  
+	  assert(req_id >= 0 && req_id < n_req);
+	  
+	  deallocate(requests, req_id);
+	  n_dealloc++;
+	}
+      else
+	{
+	  error("unknown command type:", command);
+	}
+
+      stat = page_stats();
+      int totalBytes = stat->num_in_use * stat->page_size;
+
+      
+#ifdef COMPETITION
+      if(req_id < n_req && n_alloc != n_dealloc)
+	{
+	  // We can calculate the ratio of wasted to used memory here.
+
+	  int wastedBytes = totalBytes - currentAllocBytes;
+	  ratioSum += ((double) wastedBytes) / currentAllocBytes;
+	  ratioCount += 1;
+	}
+#endif
+
+#ifndef COMPETITION
+      fprintf(allocTrace, "%d %d %d\n", index, currentAllocBytes, totalBytes);
+#endif
+      
+      index += 1;
+    }
+
+#ifndef COMPETITION
+  fclose(allocTrace);
+#endif
+  
+  
+  stat = page_stats();
+  
+  printf("Page Requested/Freed/In Use: %5d/%5d/%5d\n",
+	 stat->num_requested, stat->num_freed, stat->num_in_use);	
+  
+  if (stat->num_requested != stat->num_freed || stat->num_in_use != 0)
+    {
+      error("not all pages freed", "");
+    }
+  
+  if(anyMismatches)
+    {
+      error("there were memory mismatches", "");
+    }
+
+#ifdef COMPETITION
+  printf("Competition average ratio: %f\n", ratioSum / ratioCount);
+#endif
+  
+  pass();
+  return 0;
 }
 
-// gets block, halfway into block
-// then adds them both and makes them buddies
-// and returns the first one
-void* split_block(void *ptr, int sz) {
-	void *tmp = rm_fl(ptr);
-	void *tmp_bud = *(&tmp + sz);
-	add_fl_buddies(tmp, tmp_bud, sz);
-	return tmp;
+void
+fail()
+{
+  printf("Test: FAILED\n");
+  exit(-1);
 }
 
-// regular add_fl for single adds (e.g. re-adding free'd blocks whose buddy is still in use)
-void add_fl(void *ptr, int bufsize) { // ptr is a pointer to the beginning of the freelist
-	// tmp is a new element in the free list that we are adding
-	freelist tmp; // need to figure out WHERE this is pointing to
-	freelist *tmp2;
-	tmp2 = (freelist *) ptr; // the new beginning of the free list is tmp
-	tmp2->ptr = (struct fl* ) ((char *) ptr + bufsize); // we assign the next pointer of our next element to the beginning of the freelist
-	tmp = *tmp2;
-	return;	
+void
+pass()
+{
+  printf("Test: PASS\n");
+  exit(0);
 }
 
-void add_fl_buddies(void *ptr1, void *ptr2, int bufsize) { 
-	// tmp is a new element in the free list that we are adding
-	int what = 0;
-	int ihateeverything = 0;
-	freelist *tmp = ptr1;
-	freelist *tmp2 = ptr2;
-	tmp->ptr = ptr1 + bufsize; // we assign the next pointer of our next element to the beginning of the freelist
-	tmp2->ptr = ptr2 + bufsize;
-	tmp->buddy = tmp2;
-	tmp2->buddy = tmp;
-	tmp->free = 1;
-	tmp2->free = 1;
-	return;	
+void
+usage() {
+  printf("Usage: %s traceFile\n", name);
+  exit(0);
 }
 
-void* rm_fl(void *ptr) { 
-	freelist *tmp = ptr;
-	coalesce_blocks(ptr, tmp->rnd_sz);
-	return ((char *)tmp + sizeof(freelist));
+void
+error(char* message, char* arg ) {
+  fprintf(stderr, "ERROR: %s: %s.\n", message, arg);
+  fail();
 }
 
-#endif // KMA_BUD
+void
+allocate(mem_t* requests, int req_id, int req_size)
+{
+  mem_t* new = &requests[req_id];
+  
+  assert(new->state == FREE);
+  
+  new->size = req_size;
+  new->ptr = kma_malloc(new->size);
+  
+  // Accept a NULL response in some cases... 
+  if(!(((new->ptr != NULL) && (new->size <= (PAGESIZE - sizeof(void*))))
+       || ((new->ptr == NULL) && (new->size > (PAGESIZE - sizeof(void*))))))
+    {
+      error("got NULL from kma_malloc for alloc'able request", "");
+    }
+  
+  if (new->ptr == NULL)
+    {
+      return;
+    }
+
+  currentAllocBytes += req_size;
+  
+#ifndef COMPETITION
+  // Only run the actual memory accesses/copies/checks if we're
+  // testing for correctness.
+  
+  new->value = malloc(new->size);
+  assert(new->value != NULL);
+  
+  // initialize memory
+  fill((char*)new->ptr, new->size);
+  
+  // copy the value for further reference
+  bcopy(new->ptr, new->value, new->size);
+  
+  check((char*)new->ptr, (char*)new->value, new->size);
+  
+#endif
+
+  new->state = USED;
+}
+
+void
+deallocate(mem_t* requests, int req_id)
+{
+  mem_t* cur = &requests[req_id];
+  
+  assert(cur->state == USED);
+  assert(cur->size > 0);
+  
+#ifndef COMPETITION
+  // Only run the memory checks if we're testing for correctness.
+
+  // check memory
+  check((char*)cur->ptr, (char*)cur->value, cur->size);
+
+  // free memory
+  free(cur->value);
+#endif
+
+  kma_free(cur->ptr, cur->size);
+
+  currentAllocBytes -= cur->size;
+  
+  cur->state = FREE;
+}
+
+void
+fill(char* ptr, int size)
+{
+  int i;
+  
+  for (i = 0; i < size; i++)
+    {
+      ptr[i] = (char) val++;
+    }
+}
+
+void
+check(char* lhs, char* rhs, int size)
+{
+  int i;
+  
+  for (i = 0; i < size; i++)
+    {
+      if (lhs[i] != rhs[i])
+	{
+	  fprintf(stderr, "memory mismatch at position %d (%3d!=%3d)\n", 
+		  i, lhs[i], rhs[i]);
+	  anyMismatches = 1;
+	}
+    }
+}
