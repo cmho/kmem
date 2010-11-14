@@ -1,364 +1,570 @@
 /***************************************************************************
- *  Title: Kernel Memory Allocator
+ *	Title: Kernel Memory Allocator
  * -------------------------------------------------------------------------
- *    Purpose: Test suite for the kernel memory allocator
- *    Author: Stefan Birrer
- *    Version: $Revision: 1.3 $
- *    Last Modification: $Date: 2009/10/31 21:28:52 $
- *    File: $RCSfile: kma.c,v $
- *    Copyright: 2004 Northwestern University
+ *		Purpose: Kernel memory allocator based on the power-of-two free list
+ * 						algorithm
+ *		Author: Stefan Birrer
+ *		Version: $Revision: 1.2 $
+ *		Last Modification: $Date: 2009/10/31 21:28:52 $
+ *		File: $RCSfile: kma_p2fl.c,v $
+ *		Copyright: 2004 Northwestern University
  ***************************************************************************/
 /***************************************************************************
- *  ChangeLog:
+ *	ChangeLog:
  * -------------------------------------------------------------------------
- *    $Log: kma.c,v $
- *    Revision 1.3  2009/10/31 21:28:52  jot836
- *    This is the current version of KMA project 3.
- *    It includes:
- *    - the most up-to-date handout (F'09)
- *    - updated skeleton including
- *        file-driven test harness,
- *        trace generator script,
- *        support for evaluating efficiency of algorithm (wasted memory),
- *        gnuplot support for plotting allocation and waste,
- *        set of traces for all students to use (including a makefile and README of the settings),
- *    - different version of the testsuite for use on the submission site, including:
- *        scoreboard Python scripts, which posts the top 5 scores on the course webpage
+ *		$Log: kma_p2fl.c,v $
+ *		Revision 1.2	2009/10/31 21:28:52	jot836
+ *		This is the current version of KMA project 3.
+ *		It includes:
+ *		- the most up-to-date handout (F'09)
+ *		- updated skeleton including
+ *				file-driven test harness,
+ *				trace generator script,
+ *				support for evaluating efficiency of algorithm (wasted memory),
+ *				gnuplot support for plotting allocation and waste,
+ *				set of traces for all students to use (including a makefile and README of the settings),
+ *		- different version of the testsuite for use on the submission site, including:
+ *				scoreboard Python scripts, which posts the top 5 scores on the course webpage
  *
- *    Revision 1.2  2009/10/21 07:06:46  npb853
- *    New test framework in place. Also adding a new sample testcase file
+ *		Revision 1.1	2005/10/24 16:07:09	sbirrer
+ *		- skeleton
  *
- *    Revision 1.1  2005/10/24 16:07:09  sbirrer
- *    - skeleton
+ *		Revision 1.2	2004/11/05 15:45:56	sbirrer
+ *		- added size as a parameter to kma_free
  *
- *    Revision 1.4  2004/11/30 22:11:42  sbirrer
- *    - assure always one allocation pending during test
- *
- *    Revision 1.3  2004/11/16 19:33:50  sbirrer
- *    - increased the request size
- *
- *    Revision 1.2  2004/11/05 15:45:56  sbirrer
- *    - added size as a parameter to kma_free
- *
- *    Revision 1.1  2004/11/03 23:04:03  sbirrer
- *    - initial version for the kernel memory allocator project
- *
- *    Revision 1.1  2004/11/03 18:34:52  sbirrer
- *    - initial version of the kernel memory project
+ *		Revision 1.1	2004/11/03 23:04:03	sbirrer
+ *		- initial version for the kernel memory allocator project
  *
  ***************************************************************************/
-#define __KMA_TEST_IMPL__
+#ifdef KMA_BUD
+#define __KMA_IMPL__
 
 /************System include***********************************************/
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
-#include <math.h>
 
 /************Private include**********************************************/
 #include "kpage.h"
 #include "kma.h"
 
 /************Defines and Typedefs*****************************************/
-/*  #defines and typedefs should have their names in all caps.
- *  Global variables begin with g. Global constants with k. Local
- *  variables should be in all lower case. When initializing
- *  structures and arrays, line everything up in neat columns.
+/*	defines and typedefs should have their names in all caps.
+ *	Global variables begin with g. Global constants with k. Local
+ *	variables should be in all lower case. When initializing
+ *	structures and arrays, line everything up in neat columns.
  */
 
-enum REQ_STATE
-  {
-    FREE,
-    USED
-  };
-
-typedef struct mem
+	
+typedef struct
 {
-  int size;
-  void* ptr;
-  void* value; // to check correctness
-  enum REQ_STATE state;
-} mem_t;
+	int size;
+	int pagespace;
+	void* nextfree;
+	void* prevfree;
+	void* buddy;
+	void* pageheader;
+	void* pagelink;
+	kpage_t* pagepointer;
+} header;
+
+#define PAGESIZE 8192
+#define DEBUG 0
 
 /************Global Variables*********************************************/
-
-static int val = 0;
-
+static kpage_t* kpage; 
+int request = 0;
+int alloc = 0;
 /************Function Prototypes******************************************/
-void allocate();
-void deallocate();
-void fill(char*, int);
-void check(char*, char*, int);
-void usage();
-void error(char*, char*);
-void pass();
-void fail();
-
+void kmainit();
+void* search(kma_size_t, int);
+void* split_block(void*, kma_size_t);
+void coalesce_blocks(void*);
 /************External Declaration*****************************************/
-
-
 
 /**************Implementation***********************************************/
 
-int anyMismatches = 0;
-
-int currentAllocBytes = 0;
-
-char *name = NULL;
-
-int
-main(int argc, char* argv[])
+void*
+kma_malloc(kma_size_t size)
 {
-  
-  name = argv[0];
-  
-#ifdef COMPETITION
-  printf("%s: Running in competition mode\n", name);
-#endif
-
-#ifndef COMPETITION
-  printf("%s: Running in correctness mode\n", name);
-#endif
-
-  int n_req = 0, n_alloc=0, n_dealloc=0;
-  kpage_stat_t* stat;
-
-#ifdef COMPETITION
-  double ratioSum = 0.0;
-  int ratioCount = 0;
-#endif
-  
-#ifndef COMPETITION
-  FILE* allocTrace = fopen("kma_output.dat", "w");
-  if (allocTrace == NULL)
-    {
-      error("unable to open allocation output file", "kma_output.dat");
-    }
-  fprintf(allocTrace, "0 0 0\n");
-#endif
-
-  if (argc != 2)
-    {
-      usage();
-    }
-  
-  FILE* f_test = fopen(argv[1], "r");
-  if (f_test == NULL)
-    {
-      error("unable to open input test file", argv[1]);
-    }
-  
-  // Get the number of requests in the trace file
-  // Allocate some memory...
-  int status = fscanf(f_test, "%d\n", &n_req);
-  if(status != 1)
-    error("Couldn't read number of requests at head of file", "");
-  
-  mem_t* requests = malloc((n_req + 1)*sizeof(mem_t));
-  memset(requests, 0, (n_req + 1)*sizeof(mem_t));
-  
-  char command[16];
-  int req_id, req_size, index = 1;
-
-  // Parse the lines in the file, and call allocate or
-  // deallocate accordingly.
-  while (fscanf(f_test, "%10s", command) == 1)
-    {
-      if (strcmp(command, "REQUEST") == 0)
-	{
-	  
-	  if (fscanf(f_test, "%d %d", &req_id, &req_size) != 2)
-	    error("Not enough arguments to REQUEST", "");
-
-	  assert(req_id >= 0 && req_id < n_req);
-	  
-	  allocate(requests, req_id, req_size);
-	  n_alloc++;
+	int totalsize;
+	header *newheader,*pageheader;
+	
+	if(kpage==NULL || kpage->ptr == NULL)
+ 		kmainit();
+	if(size + sizeof(header)>PAGESIZE)
+ 		return NULL;
+	totalsize = size + sizeof(header);
+	
+	request=request+size;
+	
+	if(totalsize <= 32)				
+	{ 
+		newheader=(header*)search(32, 0);
+		newheader->nextfree=kpage->ptr;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+32;
+		return((void*)newheader+sizeof(header));
 	}
-      else if (strcmp(command, "FREE") == 0)
-	{
-	  if (fscanf(f_test, "%d", &req_id) != 1)
-	    error("Not enough arguments to FREE", "");
-	  
-	  assert(req_id >= 0 && req_id < n_req);
-	  
-	  deallocate(requests, req_id);
-	  n_dealloc++;
+	
+	else if(totalsize <= 64) 	
+	{ 
+		newheader=(header*)search(64, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header);
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+64;
+		return((void*)newheader+sizeof(header));
 	}
-      else
-	{
-	  error("unknown command type:", command);
+	else if(totalsize <= 128)	
+	{ 
+		newheader=(header*)search(128, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header)*2;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+128;
+		return((void*)newheader+sizeof(header));
 	}
-
-      stat = page_stats();
-      int totalBytes = stat->num_in_use * stat->page_size;
-
-      
-#ifdef COMPETITION
-      if(req_id < n_req && n_alloc != n_dealloc)
-	{
-	  // We can calculate the ratio of wasted to used memory here.
-
-	  int wastedBytes = totalBytes - currentAllocBytes;
-	  ratioSum += ((double) wastedBytes) / currentAllocBytes;
-	  ratioCount += 1;
+	else if(totalsize <= 256)	
+	{ 
+		newheader=(header*)search(256, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header)*3;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+256;
+		return((void*)newheader+sizeof(header));
 	}
-#endif
-
-#ifndef COMPETITION
-      fprintf(allocTrace, "%d %d %d\n", index, currentAllocBytes, totalBytes);
-#endif
-      
-      index += 1;
-    }
-
-#ifndef COMPETITION
-  fclose(allocTrace);
-#endif
-  
-  
-  stat = page_stats();
-  
-  printf("Page Requested/Freed/In Use: %5d/%5d/%5d\n",
-	 stat->num_requested, stat->num_freed, stat->num_in_use);	
-  
-  if (stat->num_requested != stat->num_freed || stat->num_in_use != 0)
-    {
-      error("not all pages freed", "");
-    }
-  
-  if(anyMismatches)
-    {
-      error("there were memory mismatches", "");
-    }
-
-#ifdef COMPETITION
-  printf("Competition average ratio: %f\n", ratioSum / ratioCount);
-#endif
-  
-  pass();
-  return 0;
-}
-
-void
-fail()
-{
-  printf("Test: FAILED\n");
-  exit(-1);
-}
-
-void
-pass()
-{
-  printf("Test: PASS\n");
-  exit(0);
-}
-
-void
-usage() {
-  printf("Usage: %s traceFile\n", name);
-  exit(0);
-}
-
-void
-error(char* message, char* arg ) {
-  fprintf(stderr, "ERROR: %s: %s.\n", message, arg);
-  fail();
-}
-
-void
-allocate(mem_t* requests, int req_id, int req_size)
-{
-  mem_t* new = &requests[req_id];
-  
-  assert(new->state == FREE);
-  
-  new->size = req_size;
-  new->ptr = kma_malloc(new->size);
-  
-  // Accept a NULL response in some cases... 
-  if(!(((new->ptr != NULL) && (new->size <= (PAGESIZE - sizeof(void*))))
-       || ((new->ptr == NULL) && (new->size > (PAGESIZE - sizeof(void*))))))
-    {
-      error("got NULL from kma_malloc for alloc'able request", "");
-    }
-  
-  if (new->ptr == NULL)
-    {
-      return;
-    }
-
-  currentAllocBytes += req_size;
-  
-#ifndef COMPETITION
-  // Only run the actual memory accesses/copies/checks if we're
-  // testing for correctness.
-  
-  new->value = malloc(new->size);
-  assert(new->value != NULL);
-  
-  // initialize memory
-  fill((char*)new->ptr, new->size);
-  
-  // copy the value for further reference
-  bcopy(new->ptr, new->value, new->size);
-  
-  check((char*)new->ptr, (char*)new->value, new->size);
-  
-#endif
-
-  new->state = USED;
-}
-
-void
-deallocate(mem_t* requests, int req_id)
-{
-  mem_t* cur = &requests[req_id];
-  
-  assert(cur->state == USED);
-  assert(cur->size > 0);
-  
-#ifndef COMPETITION
-  // Only run the memory checks if we're testing for correctness.
-
-  // check memory
-  check((char*)cur->ptr, (char*)cur->value, cur->size);
-
-  // free memory
-  free(cur->value);
-#endif
-
-  kma_free(cur->ptr, cur->size);
-
-  currentAllocBytes -= cur->size;
-  
-  cur->state = FREE;
-}
-
-void
-fill(char* ptr, int size)
-{
-  int i;
-  
-  for (i = 0; i < size; i++)
-    {
-      ptr[i] = (char) val++;
-    }
-}
-
-void
-check(char* lhs, char* rhs, int size)
-{
-  int i;
-  
-  for (i = 0; i < size; i++)
-    {
-      if (lhs[i] != rhs[i])
-	{
-	  fprintf(stderr, "memory mismatch at position %d (%3d!=%3d)\n", 
-		  i, lhs[i], rhs[i]);
-	  anyMismatches = 1;
+	else if(totalsize <= 512)	
+	{ 
+		newheader=(header*)search(512, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header)*4;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+512;
+		return((void*)newheader+sizeof(header));
 	}
-    }
+	else if(totalsize <= 1024) 
+	{ 
+		newheader=(header*)search(1024, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header)*5;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+1024;
+		return((void*)newheader+sizeof(header));
+	}
+	else if(totalsize <= 2048) 
+	{ 
+		newheader=(header*)search(2048, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header)*6;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+2048;
+		return((void*)newheader+sizeof(header));
+	}
+	else if(totalsize <= 4096) 
+	{ 
+		newheader=(header*)search(4096, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header)*7;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+4096;
+		return((void*)newheader+sizeof(header));
+	}
+	else if(totalsize <= 8192) 
+	{ 
+		newheader=(header*)search(8192, 0);
+		newheader->nextfree=kpage->ptr+sizeof(header)*8;
+		pageheader=(header*)newheader->pageheader;
+		pageheader->pagespace=pageheader->pagespace-newheader->size;
+		alloc=alloc+8192;
+		return((void*)newheader+sizeof(header));
+	}
+	else	return NULL;
 }
+
+void
+kma_free(void* ptr, kma_size_t size)
+{
+	header *freeheader,*pageheader,*headertofree,*preheader,*listtoadd;
+	int i,flag;
+	
+	freeheader = (header*)(ptr-sizeof(header));
+	listtoadd = (header*)freeheader->nextfree;
+	freeheader->nextfree = listtoadd->nextfree;
+	listtoadd->nextfree = ptr-sizeof(header); 		
+	pageheader=(header*)freeheader->pageheader;
+	pageheader->pagespace= pageheader->pagespace+freeheader->size;
+	// attempt to coalesce blocks
+	coalesce_blocks(ptr);
+	if(pageheader->pagespace == 8192)																								//If a page has free space of 8192, then it could be freed.
+	{
+		headertofree = pageheader;
+		while(headertofree->pagelink!=NULL)																								
+		{
+			preheader = headertofree;
+			while(preheader->nextfree!=headertofree) 																		//Find the former block in the link list to delete this block from list.
+			{
+ 				preheader = preheader->nextfree;
+			}
+			preheader->nextfree = headertofree->nextfree;
+			headertofree=headertofree->pagelink; 							
+		}
+		preheader = headertofree;
+		while(preheader->nextfree!=headertofree)
+		{
+ 			preheader = preheader->nextfree;
+		}
+		preheader->nextfree = headertofree->nextfree;
+		free_page(pageheader->pagepointer); 
+		flag=0;
+		listtoadd=(header*)kpage->ptr;
+		for(i=0;i<9;i++)
+			{
+			if(listtoadd->nextfree!=listtoadd) flag=1;
+			listtoadd++;
+			}	
+		if(flag==0)	{free_page(kpage);kpage=NULL; printf("The total size of all requested blocks is %d. The actual allocated size is %d. The efficiency is %f\n",request,alloc,(double)request/(double)alloc);} 																
+ 	}
+}
+
+void kmainit()
+{
+	kpage_t* initpage;
+	header* headlist;
+	initpage = get_page();
+	kpage = initpage;
+	headlist = (header*)initpage->ptr;
+ 	
+	headlist->size = 32;
+	headlist->nextfree = headlist;		
+	headlist++;
+	
+	headlist->size = 64;
+	headlist->nextfree = headlist;
+	headlist++;
+	
+	headlist->size = 128;
+	headlist->nextfree = headlist;
+	headlist++;
+	
+	headlist->size = 256;
+	headlist->nextfree = headlist;
+	headlist++;
+	
+	headlist->size = 512;
+	headlist->nextfree = headlist;
+	headlist++;
+	
+	headlist->size = 1024;
+	headlist->nextfree = headlist;
+	headlist++;
+	
+	headlist->size = 2048;
+	headlist->nextfree = headlist;
+	headlist++;
+	
+	headlist->size = 4096;
+	headlist->nextfree = headlist;
+	headlist++;
+	
+	headlist->size = 8192;
+	headlist->nextfree = headlist;
+
+}
+
+void* search(kma_size_t size, int rec)
+{
+	kpage_t *newpage;
+	header *buffind,*buffind2,*searchlist;
+	void* pointer;
+
+	switch (size)
+	{
+		case 32:
+			searchlist = (header*)kpage->ptr;
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(64, 1);
+				// if we're recursing, that means the block is too big; split it to the right size
+				if (rec == 1) {
+					// reassign new split to pointer
+					// I'm not sure if you actually need to reassign the value since generally it would point to the same place
+					// but it seems like it makes it more human-readable
+					// then again I'm putting in like a bazillion comments
+					pointer = split_block(pointer, 64);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 32;
+				searchlist->nextfree = pointer;
+				pointer = pointer + 32;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 32;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 64:
+			searchlist = (header*)(kpage->ptr+sizeof(header));
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(128, 1);
+				if (rec == 1) {
+					pointer = split_block(pointer, 128);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 64; 		
+				searchlist->nextfree = pointer;
+				pointer = pointer + 64;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 64;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 128:
+			searchlist = (header*)(kpage->ptr+sizeof(header)*2);
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(256, 1);
+				if (rec == 1) {
+					pointer = split_block(pointer, 256);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 128;
+				searchlist->nextfree = pointer;
+				pointer = pointer + 128;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 128;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 256:
+			searchlist = (header*)(kpage->ptr+sizeof(header)*3);
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(512, 1);
+				if (rec == 1) {
+					pointer = split_block(pointer, 512);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 256;
+				searchlist->nextfree = pointer;
+				pointer = pointer + 256;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 256;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 512:
+			searchlist = (header*)(kpage->ptr+sizeof(header)*4);
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(1024, 1);
+				if (rec == 1) {
+					pointer = split_block(pointer, 1024);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 512;
+				searchlist->nextfree = pointer;
+				pointer = pointer + 512;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 512;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 1024:
+			searchlist = (header*)(kpage->ptr+sizeof(header)*5);
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(2048, 1);
+				if (rec == 1) {
+					pointer = split_block(pointer, 2048);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 1024;
+				searchlist->nextfree = pointer;
+				pointer = pointer + 1024;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 1024;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 2048:
+			searchlist = (header*)(kpage->ptr+sizeof(header)*6);
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(4096, 1);
+				if (rec == 1) {
+					pointer = split_block(pointer, 4096);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 2048;
+				searchlist->nextfree = pointer;
+				pointer = pointer + 2048;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 2048;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 4096:
+			searchlist = (header*)(kpage->ptr+sizeof(header)*7);
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				pointer = search(8192, 1);
+				if (rec == 1) {
+					pointer = split_block(pointer, 8192);
+				}
+				buffind = (header*)pointer;
+				buffind->nextfree = searchlist;
+				buffind->size = 4096;
+				searchlist->nextfree = pointer;
+				pointer = pointer + 4096;
+				buffind2 = (header*)pointer;
+				buffind2->nextfree = NULL;
+				buffind2->size = 4096;
+				buffind2->pageheader=buffind->pageheader;
+				buffind2->pagelink=buffind->pagelink;
+				buffind->pagelink= pointer;
+				return(pointer);
+			}			
+			break;
+		case 8192:
+			searchlist = (header*)(kpage->ptr+sizeof(header)*8);
+			if(searchlist->nextfree!=searchlist)
+			{
+				buffind = (header*)searchlist->nextfree;
+				searchlist->nextfree = buffind->nextfree;
+				return(buffind);
+			}
+			else
+			{
+				newpage = get_page();
+				buffind = (header*)(newpage->ptr);
+				buffind->nextfree = NULL;
+				buffind->size = 8192;
+				buffind->pagespace=8192;
+				buffind->pageheader=buffind;
+				buffind->pagelink=NULL;
+				buffind->pagepointer=newpage;
+				return(newpage->ptr);
+			}			
+			break;
+		default:
+			printf("Error in search the header\n");
+			break;
+	}
+	return(0);
+}
+
+void* split_block(void* ptr, kma_size_t size) {
+	header* tmp1 = (header*) ptr;
+	header* tmp2 = (header*) (void*) (ptr + (size/2));
+	tmp2->nextfree = (void*) tmp1->nextfree;
+	tmp1->nextfree = (void*) tmp2;
+	tmp1->buddy = (void*) tmp2;
+	tmp2->buddy = (void*) tmp1;
+	return (void*) tmp1;
+}
+
+void coalesce_blocks(void* ptr) {
+	header* tmp = (header*) ptr;
+	header* prev = (header*) (void*) (ptr - tmp->size - sizeof(header));
+	header* next = (header*) (void*) (ptr + tmp->size);
+	if (prev->buddy == ptr) {
+		//coalesce with previous:
+		// next pointer of prev to point to next of ptr
+		// take ptr out of the list
+		prev->nextfree = tmp->nextfree;
+	} else if (next->buddy == ptr) {
+		// coalesce with next:
+		// next pointer of ptr to point to next of next
+		// take next out of the list
+		tmp->nextfree = next->nextfree;
+	}
+	return;
+}
+		
+
+#endif // KMA_BUD
